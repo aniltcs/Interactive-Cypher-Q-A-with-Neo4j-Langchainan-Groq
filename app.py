@@ -21,15 +21,15 @@ NEO4J_PASS = os.getenv("NEO4J_PASSWORD")
 # -----------------------------
 driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
 
-def get_neo4j_graph():
-    """Return a fresh Neo4jGraph instance with a live session"""
-    return Neo4jGraph(url=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASS, refresh_schema=False)
-
-def run_cypher_query(query):
-    """Run a raw Cypher query safely in a session"""
+# Safe query runner using sessions
+def run_cypher(query):
     with driver.session() as session:
         result = session.run(query)
         return [record.data() for record in result]
+
+# Initialize Neo4jGraph and override query to use session
+graph = Neo4jGraph(url=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASS, refresh_schema=False)
+graph.query = run_cypher  # override internal query method
 
 # -----------------------------
 # Initialize LLM
@@ -40,44 +40,17 @@ llm = ChatGroq(model="llama-3.1-8b-instant", groq_api_key=GROQ_API_KEY)
 # Few-shot examples
 # -----------------------------
 examples = [
-    {
-        "question": "How many artists are there?",
-        "query": "MATCH (a:Person)-[:ACTED_IN]->(:Movie) RETURN count(DISTINCT a)",
-    },
-    {
-        "question": "Which actors played in the movie Casino?",
-        "query": "MATCH (m:Movie {{title: 'Casino'}})<-[:ACTED_IN]-(a) RETURN a.name",
-    },
-    {
-        "question": "How many movies has Tom Hanks acted in?",
-        "query": "MATCH (a:Person {{name: 'Tom Hanks'}})-[:ACTED_IN]->(m:Movie) RETURN count(m)",
-    },
-    {
-        "question": "List all the genres of the movie Jumanji",
-        "query": "MATCH (m:Movie {{title: 'Jumanji'}})-[:IN_GENRE]->(g:Genre) RETURN g.name",
-    },
-    {
-        "question": "Which actors have worked in movies from both the comedy and action genres?",
-        "query": "MATCH (a:Person)-[:ACTED_IN]->(:Movie)-[:IN_GENRE]->(g1:Genre), (a)-[:ACTED_IN]->(:Movie)-[:IN_GENRE]->(g2:Genre) WHERE g1.name = 'Comedy' AND g2.name = 'Action' RETURN DISTINCT a.name",
-    },
-    {
-        "question": "Identify movies where directors also played a role in the film.",
-        "query": "MATCH (p:Person)-[:DIRECTED]->(m:Movie), (p)-[:ACTED_IN]->(m) RETURN m.title, p.name",
-    },
-    {
-        "question": "Find the actor with the highest number of movies in the database.",
-        "query": "MATCH (a:Person)-[:ACTED_IN]->(m:Movie) RETURN a.name, COUNT(m) AS movieCount ORDER BY movieCount DESC LIMIT 1",
-    },
+    {"question": "How many artists are there?", "query": "MATCH (a:Person)-[:ACTED_IN]->(:Movie) RETURN count(DISTINCT a)"},
+    {"question": "Which actors played in the movie Casino?", "query": "MATCH (m:Movie {{title: 'Casino'}})<-[:ACTED_IN]-(a) RETURN a.name"},
+    {"question": "How many movies has Tom Hanks acted in?", "query": "MATCH (a:Person {{name: 'Tom Hanks'}})-[:ACTED_IN]->(m:Movie) RETURN count(m)"},
+    {"question": "List all the genres of the movie Jumanji", "query": "MATCH (m:Movie {{title: 'Jumanji'}})-[:IN_GENRE]->(g:Genre) RETURN g.name"},
+    {"question": "Which actors have worked in movies from both the comedy and action genres?", "query": "MATCH (a:Person)-[:ACTED_IN]->(:Movie)-[:IN_GENRE]->(g1:Genre), (a)-[:ACTED_IN]->(:Movie)-[:IN_GENRE]->(g2:Genre) WHERE g1.name = 'Comedy' AND g2.name = 'Action' RETURN DISTINCT a.name"},
 ]
 
-
-example_prompt = PromptTemplate.from_template(
-    "User input:{question}\n Cypher query:{query}"
-)
+example_prompt = PromptTemplate.from_template("User input:{question}\n Cypher query:{query}")
 
 prefix = """
 You are a strict Cypher expert.
-
 Follow these rules:
 1. NEVER use SQL keywords like SELECT, GROUP BY, HAVING.
 2. ALWAYS use Cypher syntax: MATCH, WHERE, RETURN, ORDER BY, LIMIT.
@@ -98,12 +71,25 @@ prompt = FewShotPromptTemplate(
 )
 
 # -----------------------------
-# Initialize Streamlit
+# Initialize GraphCypherQAChain
+# -----------------------------
+qa_chain = GraphCypherQAChain.from_llm(
+    graph=graph,
+    llm=llm,
+    cypher_prompt=prompt,
+    verbose=True,
+    allow_dangerous_requests=True
+)
+
+# -----------------------------
+# Streamlit Multi-tab UI
 # -----------------------------
 st.set_page_config(page_title="Neo4j Graph Q&A (Groq LLM)", layout="wide")
 tabs = st.tabs(["Home / Q&A", "Raw Cypher", "Chat History"])
 
-# Initialize chat history
+# -----------------------------
+# Session state for chat history
+# -----------------------------
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
@@ -117,15 +103,6 @@ with tabs[0]:
     if st.button("Get Answer"):
         if user_question:
             try:
-                # Fresh Neo4jGraph instance to avoid session errors
-                graph = get_neo4j_graph()
-                qa_chain = GraphCypherQAChain.from_llm(
-                    graph=graph,
-                    llm=llm,
-                    cypher_prompt=prompt,
-                    verbose=True,
-                    allow_dangerous_requests=True
-                )
                 response = qa_chain.invoke(user_question)
                 st.success(response['result'])
 
@@ -143,7 +120,7 @@ with tabs[1]:
     if st.button("Run Query"):
         if cypher_query:
             try:
-                results = run_cypher_query(cypher_query)
+                results = run_cypher(cypher_query)
                 if results:
                     st.write(results)
                 else:
