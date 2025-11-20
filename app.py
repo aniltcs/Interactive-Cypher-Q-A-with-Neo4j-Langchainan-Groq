@@ -5,29 +5,36 @@ from langchain_community.graphs import Neo4jGraph
 from langchain_groq import ChatGroq
 from langchain.chains import GraphCypherQAChain
 from langchain_core.prompts import FewShotPromptTemplate, PromptTemplate
+from neo4j import GraphDatabase
 
 # -----------------------------
-# Environment variables
+# Load environment variables
 # -----------------------------
 load_dotenv()
-os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")
-os.environ["NEO4J_URI"] = os.getenv("NEO4J_URI")
-os.environ["NEO4J_USERNAME"] = os.getenv("NEO4J_USERNAME")
-os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_PASSWORD")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+NEO4J_URI = os.getenv("NEO4J_URI")
+NEO4J_USER = os.getenv("NEO4J_USERNAME")
+NEO4J_PASS = os.getenv("NEO4J_PASSWORD")
 
 # -----------------------------
-# Neo4j connection
+# Initialize Neo4j driver
 # -----------------------------
-graph=Neo4jGraph(url=os.getenv("NEO4J_URI"),username=os.getenv("NEO4J_USERNAME"),password=os.getenv("NEO4J_PASSWORD"),refresh_schema=False )
+driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+
+def get_neo4j_graph():
+    """Return a fresh Neo4jGraph instance with a live session"""
+    return Neo4jGraph(url=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASS, refresh_schema=False)
+
+def run_cypher_query(query):
+    """Run a raw Cypher query safely in a session"""
+    with driver.session() as session:
+        result = session.run(query)
+        return [record.data() for record in result]
 
 # -----------------------------
-# LLM
+# Initialize LLM
 # -----------------------------
-groq_api_key=os.getenv("GROQ_API_KEY")
-llm = ChatGroq(
-    model="llama-3.1-8b-instant",
-    groq_api_key=groq_api_key
-)
+llm = ChatGroq(model="llama-3.1-8b-instant", groq_api_key=GROQ_API_KEY)
 
 # -----------------------------
 # Few-shot examples
@@ -63,7 +70,8 @@ examples = [
     },
 ]
 
-example_prompt=PromptTemplate.from_template(
+
+example_prompt = PromptTemplate.from_template(
     "User input:{question}\n Cypher query:{query}"
 )
 
@@ -82,34 +90,20 @@ Follow these rules:
 """
 
 prompt = FewShotPromptTemplate(
-    examples=examples[:5],
+    examples=examples,
     example_prompt=example_prompt,
     prefix=prefix,
     suffix="User input: {question}\nCypher query: ",
-    input_variables=["question"],
+    input_variables=["question"]
 )
 
 # -----------------------------
-# GraphCypherQAChain
+# Initialize Streamlit
 # -----------------------------
-qa_chain = GraphCypherQAChain.from_llm(
-    graph=graph,
-    llm=llm,
-    cypher_prompt=prompt,
-    verbose=True,
-    allow_dangerous_requests=True
-)
+st.set_page_config(page_title="Neo4j Graph Q&A (Groq LLM)", layout="wide")
+tabs = st.tabs(["Home / Q&A", "Raw Cypher", "Chat History"])
 
-# -----------------------------
-# Streamlit Multi-tab UI
-# -----------------------------
-st.set_page_config(page_title="Neo4j Graph Q&A", layout="wide")
-
-tabs = st.tabs(["Home / Q&A","History"])
-
-# -----------------------------
-# Session state for multi-turn chat
-# -----------------------------
+# Initialize chat history
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
@@ -123,35 +117,48 @@ with tabs[0]:
     if st.button("Get Answer"):
         if user_question:
             try:
+                # Fresh Neo4jGraph instance to avoid session errors
+                graph = get_neo4j_graph()
+                qa_chain = GraphCypherQAChain.from_llm(
+                    graph=graph,
+                    llm=llm,
+                    cypher_prompt=prompt,
+                    verbose=True,
+                    allow_dangerous_requests=True
+                )
                 response = qa_chain.invoke(user_question)
                 st.success(response['result'])
 
                 # Save to history
-                st.session_state.chat_history.append({"question": user_question, "answer": response['result']})
+                st.session_state.chat_history.append({"type": "Graph QA", "question": user_question, "answer": response['result']})
             except Exception as e:
                 st.error(f"Error: {e}")
 
 # -----------------------------
-# 3️⃣ Top-K Results Tab
-# -----------------------------
-# with tabs[1]:
-#     st.header("Execute Cypher Query")
-#     cypher_query = st.text_area("Enter Cypher to fetch top results (RETURN limited nodes):")
-#     if st.button("Fetch Results"):
-#         if cypher_query:
-#             try:
-#                 results = graph.query(cypher_query)
-#                 st.write(results)
-#             except Exception as e:
-#                 st.error(f"Error executing Cypher: {e}")
-
-# -----------------------------
-# 4️⃣ History Tab
+# 2️⃣ Raw Cypher Tab
 # -----------------------------
 with tabs[1]:
+    st.header("Execute Raw Cypher Query")
+    cypher_query = st.text_area("Enter Cypher query (RETURN limited nodes for safety):")
+    if st.button("Run Query"):
+        if cypher_query:
+            try:
+                results = run_cypher_query(cypher_query)
+                if results:
+                    st.write(results)
+                else:
+                    st.info("Query returned no results.")
+            except Exception as e:
+                st.error(f"Error executing Cypher: {e}")
+
+# -----------------------------
+# 3️⃣ Chat History Tab
+# -----------------------------
+with tabs[2]:
     st.header("Chat History")
     if st.session_state.chat_history:
-        for idx, chat in enumerate(st.session_state.chat_history[::-1]):
+        for chat in st.session_state.chat_history[::-1]:
+            st.markdown(f"**Type:** {chat['type']}")
             st.markdown(f"**Q:** {chat['question']}")
             st.markdown(f"**A:** {chat['answer']}")
             st.markdown("---")
