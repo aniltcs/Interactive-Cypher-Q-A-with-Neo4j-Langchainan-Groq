@@ -105,7 +105,7 @@ qa_chain = GraphCypherQAChain.from_llm(
 # -----------------------------
 st.set_page_config(page_title="Neo4j Graph Q&A", layout="wide")
 
-tabs = st.tabs(["Home / Q&A", "Cypher Query Results", "History"])
+tabs = st.tabs(["Home / Q&A","History"])
 
 # -----------------------------
 # Session state for multi-turn chat
@@ -134,21 +134,21 @@ with tabs[0]:
 # -----------------------------
 # 3️⃣ Top-K Results Tab
 # -----------------------------
-with tabs[1]:
-    st.header("Execute Cypher Query")
-    cypher_query = st.text_area("Enter Cypher to fetch top results (RETURN limited nodes):")
-    if st.button("Fetch Results"):
-        if cypher_query:
-            try:
-                results = graph.query(cypher_query)
-                st.write(results)
-            except Exception as e:
-                st.error(f"Error executing Cypher: {e}")
+# with tabs[1]:
+#     st.header("Execute Cypher Query")
+#     cypher_query = st.text_area("Enter Cypher to fetch top results (RETURN limited nodes):")
+#     if st.button("Fetch Results"):
+#         if cypher_query:
+#             try:
+#                 results = graph.query(cypher_query)
+#                 st.write(results)
+#             except Exception as e:
+#                 st.error(f"Error executing Cypher: {e}")
 
 # -----------------------------
 # 4️⃣ History Tab
 # -----------------------------
-with tabs[2]:
+with tabs[1]:
     st.header("Chat History")
     if st.session_state.chat_history:
         for idx, chat in enumerate(st.session_state.chat_history[::-1]):
